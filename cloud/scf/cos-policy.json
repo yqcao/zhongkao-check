@@ -1,0 +1,13 @@
+{
+  "version": "2.0",
+  "statement": [
+    {
+      "effect": "allow",
+      "action": ["name/cos:PutObject", "name/cos:GetObject", "name/cos:GetBucket"],
+      "resource": [
+        "qcs::cos:ap-hongkong:uid/1524734921:zhongkao-results-1524734921/*",
+        "qcs::cos:ap-hongkong:uid/1524734921:zhongkao-results-1524734921/"
+      ]
+    }
+  ]
+}
