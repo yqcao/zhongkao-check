@@ -52,6 +52,8 @@ async function loadBanks() {
   for (const b of ZK.banks) for (const it of b.items || []) {
     if (!C.mod[it.module]) continue;
     C.byId[it.id] = it;
+    const kps = (C.kp[it.module] ||= []);
+    if (it.kp && !kps.includes(it.kp)) kps.push(it.kp);
     if (it.passage && C.passageById[it.passage]) C.passageById[it.passage].qs.push(it);
     else ((C.items[it.module] ||= {})[it.level] ||= []).push(it);
   }
@@ -500,6 +502,52 @@ function renderRunDone() {
 }
 
 // ---------------------------------------------------------------- 页面：报告（我的结果 / 家长）
+// 知识树：科目 → 模块 → 知识点。模块按达到的层级着色并标出失分，知识点按错题标红。
+// 最近一次诊断里做错的知识点为红色，更早做错、最近没再错的为黄色；没出现错题的为灰色（不代表已经掌握，可能还没考到）。
+function treeHTML(st, pr) {
+  const recentMiss = (r, x) => r && x.at <= r.at + 5000 && x.at >= r.at - ((r.sec || 0) + 5) * 1000;
+  const subjects = pr.subjects.map((x) => {
+    const mods = x.mods.map(({ m, r, pts }) => {
+      const hits = dict();
+      for (const ms of st.misses) {
+        const it = C.byId[ms.id];
+        if (!it || it.module !== m.id || !it.kp) continue;
+        const h = (hits[it.kp] ||= { recent: 0, old: 0 });
+        if (recentMiss(r, ms)) h.recent++; else h.old++;
+      }
+      const all = C.kp[m.id] || [];
+      const missed = all.filter((k) => hits[k]).sort((a, b) => hits[b].recent - hits[a].recent || hits[b].old - hits[a].old);
+      return { m, r, pts, lost: m.pts - pts, hits, missed, quiet: all.filter((k) => !hits[k]) };
+    });
+    const man = x.man.map((mm) => ({ ...mm, lost: mm.value == null ? null : mm.pts - clamp(+mm.value || 0, 0, mm.pts) }));
+    const lost = mods.reduce((a, d) => a + d.lost, 0) + man.reduce((a, d) => a + (d.lost || 0), 0);
+    return { ...x, mods, man, lost, anyTested: mods.some((d) => d.r) };
+  });
+  const open = new Set(subjects.filter((x) => x.anyTested).sort((a, b) => b.lost - a.lost).slice(0, 2).map((x) => x.s.id));
+  const lvClass = (r) => (r == null ? "lv-n" : r.level >= 3 ? "lv-good" : r.level === 2 ? "lv-mid" : "lv-bad");
+  const bar = (lost, full, est) => `<span class="lostbar${est ? " est" : ""}" aria-hidden="true"><b style="width:${Math.round(clamp(lost / full, 0, 1) * 100)}%"></b></span>`;
+  const kpChip = (k, h) => `<span class="kp ${h.recent ? "hot" : "old"}">${esc(k)}${h.recent + h.old > 1 ? ` ×${h.recent + h.old}` : ""}</span>`;
+  return `<article class="sheet stack"><header><h2>知识树</h2><span class="muted small">科目 → 模块 → 知识点，看清失分在哪里</span></header>
+    <div class="tree-legend"><span><i class="sw lv-bad"></i>基础及以下</span><span><i class="sw lv-mid"></i>中档</span><span><i class="sw lv-good"></i>较难、压轴</span><span><i class="sw lv-n"></i>未测</span>
+      <span><i class="sw kp-hot"></i>最近做错的知识点</span><span><i class="sw kp-old"></i>以前错过</span><span class="muted">红条越长，失分越多；斜纹为未测的估算</span></div>
+    ${subjects.map((x) => `<details class="ktree" style="--subj:var(${x.s.color})" ${open.has(x.s.id) ? "open" : ""}>
+      <summary><span class="kname">${esc(x.s.name)}</span>${bar(x.lost, x.s.full, !x.anyTested)}<span class="num small">预估 ${Math.round(x.pred)} / ${x.s.full} · 失 ${Math.round(x.lost)}</span></summary>
+      <ul class="tree">${x.mods.map((d) => `<li><div class="tnode ${lvClass(d.r)}">
+          <div class="tn-name"><strong>${esc(d.m.name)}</strong> ${levelPill(d.r ? d.r.level : null)}</div>
+          <span class="num small">${d.r ? `失 ${round1(d.lost)}` : `约失 ${round1(d.lost)}`} / ${d.m.pts}</span>
+          ${bar(d.lost, d.m.pts, !d.r)}
+          <div class="muted small">${d.r ? `${d.r.right}/${d.r.n} 题 · ${fmtDate(d.r.at)}` : "未测，按中档估算"}</div>
+        </div>
+        ${d.missed.length || d.quiet.length ? `<div class="kpleaves">${d.missed.map((k) => kpChip(k, d.hits[k])).join("")}
+          ${d.quiet.length ? `<details class="kp-more"><summary>${d.missed.length ? "其他" : "全部"} ${d.quiet.length} 个知识点${d.r ? "（暂未发现问题）" : ""}</summary><div class="kpleaves inner">${d.quiet.map((k) => `<span class="kp quiet">${esc(k)}</span>`).join("")}</div></details>` : ""}</div>` : ""}
+      </li>`).join("")}
+      ${x.man.map((mm) => `<li><div class="tnode lv-man"><div class="tn-name"><strong>${esc(mm.name)}</strong> <span class="pill">手填</span></div>
+          <span class="num small">${mm.lost == null ? "未填" : `失 ${round1(mm.lost)}`} / ${mm.pts}</span>${mm.lost == null ? "" : bar(mm.lost, mm.pts)}
+          <div class="muted small">${mm.isDefault ? "用的是假设值，可在上面填写实际成绩" : "家长填写"}</div></div></li>`).join("")}</ul>
+    </details>`).join("")}
+  </article>`;
+}
+
 function reportHTML(st, { parent }) {
   const manual = manualFor(st.sid);
   const pr = predict(st.results, manual);
@@ -537,13 +585,7 @@ function reportHTML(st, { parent }) {
         <span class="gain">+${round1(x.gain)} 分</span></li>`).join("")}</ol>` : `<p class="empty">做完几个模块后，这里会列出最值得先补的地方。</p>`}
     </article>
 
-    <div class="stack">${pr.subjects.map((x) => `<article class="sheet subj" style="--subj:var(${x.s.color})">
-      <div class="subj-head"><h2>${esc(x.s.name)}</h2><span class="num">预估 ${Math.round(x.pred)} / ${x.s.full}</span></div>
-      <ul class="mods">${x.mods.map(({ m, r, pts }) => `<li class="mod"><div class="nm">${esc(m.name)}</div>${cellsHTML(r ? r.level : null)}
-        <span class="act num small">${round1(pts)} / ${m.pts}${r ? "" : " <span class=\"muted\">(估)</span>"}</span>
-        <div class="sub">${r ? `${esc(levelName(r.level))} · ${r.right}/${r.n} 题 · ${fmtDate(r.at)}${r.grownup ? " · 家长朗读" : ""}` : "未测，暂按中档估算"}</div></li>`).join("")}
-      ${x.man.map((mm) => `<li class="mod"><div class="nm">${esc(mm.name)} <span class="muted small">（手填）</span></div><span></span><span class="act num small">${mm.value == null ? "—" : mm.value} / ${mm.pts}</span></li>`).join("")}</ul>
-    </article>`).join("")}</div>
+    ${treeHTML(st, pr)}
 
     <article class="sheet"><header><h2>薄弱知识点</h2><span class="muted small">按错题次数</span></header>
       ${kps.length ? `<div class="tablewrap"><table><thead><tr><th>知识点</th><th>科目 · 模块</th><th class="num">错题数</th></tr></thead><tbody>

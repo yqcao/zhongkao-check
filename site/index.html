@@ -96,6 +96,39 @@ main.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(16px, env(safe-
 .pill.good { color: var(--good); background: var(--good-bg); border-color: transparent; }
 .pill.warn { color: var(--warn); background: var(--warn-bg); border-color: transparent; }
 .pill.bad { color: var(--bad); background: var(--bad-bg); border-color: transparent; }
+/* 知识树 */
+.tree-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--ink); }
+.tree-legend .sw { display: inline-block; width: 12px; height: 12px; border-radius: 3px; vertical-align: -1px; margin-right: 5px; border: 2px solid var(--lvc, var(--line)); background: var(--lvbg, transparent); }
+.sw.kp-hot { background: var(--bad-bg); border-color: var(--bad); } .sw.kp-old { background: var(--warn-bg); border-color: var(--warn); }
+.ktree { border-top: 3px solid var(--subj); border-radius: 8px; background: var(--sheet-2); }
+.ktree > summary { display: grid; grid-template-columns: 5.6em minmax(60px, 1fr) auto; gap: 10px; align-items: center; padding: 12px 14px; cursor: pointer; list-style: none; }
+.ktree > summary::-webkit-details-marker { display: none; }
+.ktree > summary::before { content: "▸"; position: absolute; margin-left: -12px; color: var(--muted); }
+.ktree[open] > summary::before { content: "▾"; }
+.ktree > summary { position: relative; padding-left: 26px; }
+.kname { font-weight: 700; color: var(--subj); font-size: 17px; }
+.lostbar { display: block; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; min-width: 40px; }
+.lostbar b { display: block; height: 100%; background: var(--bad); border-radius: 4px; }
+.lostbar.est b { background: repeating-linear-gradient(135deg, var(--bad) 0 4px, transparent 4px 7px); }
+.tree { list-style: none; margin: 0; padding: 0 14px 14px 14px; }
+.tree > li { position: relative; padding: 8px 0 4px 24px; }
+.tree > li::before { content: ""; position: absolute; left: 8px; top: 0; bottom: 0; border-left: 2px solid var(--subj); opacity: .55; }
+.tree > li:last-child::before { bottom: auto; height: 30px; }
+.tree > li::after { content: ""; position: absolute; left: 8px; top: 30px; width: 14px; border-top: 2px solid var(--subj); opacity: .55; }
+.tnode { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 4px 10px; align-items: center; padding: 9px 12px; background: var(--sheet); border: 1.5px solid var(--lvc); border-left-width: 6px; border-radius: 8px; }
+.tnode .lostbar { grid-column: 1 / -1; height: 6px; }
+.tnode > .muted { grid-column: 1 / -1; }
+.lv-bad { --lvc: var(--bad); --lvbg: var(--bad-bg); } .lv-mid { --lvc: var(--warn); --lvbg: var(--warn-bg); } .lv-good { --lvc: var(--good); --lvbg: var(--good-bg); }
+.lv-n { --lvc: var(--line); } .tnode.lv-n { border-style: dashed; } .lv-man { --lvc: var(--muted); }
+.kpleaves { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px 14px; padding-left: 12px; border-left: 2px dotted var(--line); align-items: center; }
+.kpleaves.inner { margin: 8px 0 0; padding: 0; border: 0; }
+.kp { font-size: 13px; padding: 2px 9px; border-radius: 999px; border: 1px solid var(--line); background: var(--sheet); }
+.kp.hot { background: var(--bad-bg); color: var(--bad); border-color: var(--bad); font-weight: 700; }
+.kp.old { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.kp.quiet { color: var(--muted); }
+.kp-more { width: 100%; font-size: 13px; color: var(--muted); }
+.kp-more > summary { cursor: pointer; padding: 2px 0; }
+@media (max-width: 520px) { .ktree > summary { grid-template-columns: 5.6em minmax(40px, 1fr); } .ktree > summary .num { grid-column: 1 / -1; } }
 
 /* 作答 */
 .run-head { display: flex; align-items: center; gap: 8px 14px; flex-wrap: wrap; margin-bottom: 16px; }
