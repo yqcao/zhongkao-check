@@ -107,9 +107,9 @@ main.wrap { max-width: 1080px; margin: 0 auto; padding-left: max(16px, env(safe-
 .ktree[open] > summary::before { content: "▾"; }
 .ktree > summary { position: relative; padding-left: 26px; }
 .kname { font-weight: 700; color: var(--subj); font-size: 17px; }
-.lostbar { display: block; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; min-width: 40px; }
-.lostbar b { display: block; height: 100%; background: var(--bad); border-radius: 4px; }
-.lostbar.est b { background: repeating-linear-gradient(135deg, var(--bad) 0 4px, transparent 4px 7px); }
+.lostbar { display: flex; height: 8px; border-radius: 4px; background: var(--line); overflow: hidden; min-width: 40px; }
+.lostbar b { display: block; height: 100%; background: var(--bad); }
+.lostbar i { display: block; height: 100%; background: repeating-linear-gradient(135deg, var(--muted) 0 3px, transparent 3px 6px); opacity: .55; }
 .tree { list-style: none; margin: 0; padding: 0 14px 14px 14px; }
 .tree > li { position: relative; padding: 8px 0 4px 24px; }
 .tree > li::before { content: ""; position: absolute; left: 8px; top: 0; bottom: 0; border-left: 2px solid var(--subj); opacity: .55; }

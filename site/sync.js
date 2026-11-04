@@ -65,6 +65,7 @@ const Cloud = {
   enabled: !!(cfg && cfg.url),
   error: "",
   pending() { return readQueue().length; },
+  clearQueue() { try { localStorage.removeItem(QKEY); } catch (e) {} },
   // 上传一条成绩（与成绩码同样的 payload），顺带重发排队的。失败时返回 false，由页面退回成绩码。
   async push(payload) {
     if (!this.enabled) return false;

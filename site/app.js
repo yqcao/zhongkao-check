@@ -32,6 +32,8 @@ const fmtDateTime = (t) => { const d = new Date(t); return `${d.getMonth() + 1}�
 const round1 = (x) => Math.round(x * 10) / 10;
 const LETTERS = ["A", "B", "C", "D"];
 const LV = ZK.levels, SHARE = ZK.levelShare;
+// config.js 的 resetAt：这个时间之前的成绩一律作废。每台设备打开网站时清一次本机记录，家长拉取和导入也跳过旧记录。
+const RESET = +((window.ZK_CONFIG || {}).resetAt) || 0;
 const levelName = (n) => (n >= 1 ? `${LV[n - 1].name}（${n} 级）` : "未达基础");
 function readJSON(k) { try { return JSON.parse(localStorage.getItem(k)); } catch (e) { return null; } }
 function writeJSON(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); return true; } catch (e) { return false; } }
@@ -85,7 +87,9 @@ const saveParent = () => writeJSON(PKEY, P);
 // 把一条成绩记录（成绩码或云端拉取的 payload）并入家长数据。返回 true 新记录，false 已有，null 无法识别。
 function mergeRecord(p) {
   if (!p || p.v !== 1 || typeof p.s !== "string" || !/^[A-Za-z0-9_-]{1,40}$/.test(p.s) || ["__proto__", "constructor", "prototype"].includes(p.s) || !Array.isArray(p.r)) return null;
-  p = { ...p, r: p.r.filter(Array.isArray), m: Array.isArray(p.m) ? p.m.filter(Array.isArray) : [] };
+  const fresh = (at) => (+at || +p.t || 0) >= RESET;
+  p = { ...p, r: p.r.filter((r) => Array.isArray(r) && fresh(r[4])), m: Array.isArray(p.m) ? p.m.filter((x) => Array.isArray(x) && fresh(x[2])) : [] };
+  if (!p.r.length && !p.m.length && (+p.t || 0) < RESET) return false;
   const st = Object.prototype.hasOwnProperty.call(P.students, p.s) ? P.students[p.s] : (P.students[p.s] = { sid: p.s, name: p.n || "学生", results: {}, history: [], misses: [], keys: [] });
   st.name = p.n || st.name;
   const key = `${p.t}|${(p.r || []).map((r) => r[0]).join(",")}|${(p.m || []).length}`;
@@ -300,36 +304,35 @@ function exitRun() {
 
 // ---------------------------------------------------------------- 估分与提分建议（学生本机和家长页共用）
 function manualFor(sid) { return (P.manual[sid] ||= {}); }
-const DEFAULT_MANUAL = { "yw.zuowen": 32, "yy.xiezuo": 15, "wl.shiyan": 10, "hx.shiyan-op": 10, pe: 70, geobio: null };
+// 没测的模块、没填的手填项一律按 0 分计，总分随测试和填写逐步增加。
+const blank = (v) => v == null || v === "";
 function predict(results, manual) {
   const subjects = ZK.subjects.map((s) => {
     let sum = 0, tested = 0, assumed = 0;
     const mods = s.modules.map((m) => {
       const r = results[m.id];
       const lvl = r ? r.level : null;
-      const pts = r ? m.pts * SHARE[lvl] : m.pts * SHARE[2];
+      const pts = r ? m.pts * SHARE[lvl] : 0;
       if (r) tested += m.pts; else assumed += m.pts;
       sum += pts;
       return { m, r, pts };
     });
     const man = s.manual.map((x) => {
       const v = manual[x.id];
-      const val = v == null || v === "" ? DEFAULT_MANUAL[x.id] : +v;
-      return { ...x, value: val, isDefault: v == null || v === "" };
+      return { ...x, value: blank(v) ? null : +v };
     });
     for (const x of man) sum += clamp(+x.value || 0, 0, x.pts);
     return { s, mods, man, pred: sum, tested, assumed };
   });
   const extras = ZK.exam.extras.map((x) => {
     const v = manual[x.id];
-    const val = v == null || v === "" ? DEFAULT_MANUAL[x.id] : +v;
-    return { ...x, value: val, isDefault: v == null || v === "" };
+    return { ...x, value: blank(v) ? null : +v };
   });
   const testedPts = subjects.reduce((a, x) => a + x.tested, 0);
   const allPts = subjects.reduce((a, x) => a + x.tested + x.assumed, 0);
-  const extrasMissing = extras.some((x) => x.value == null);
+  const unfilled = [...subjects.flatMap((x) => x.man.filter((m) => m.value == null).map((m) => x.s.name + m.name)), ...extras.filter((x) => x.value == null).map((x) => x.name)];
   const total = subjects.reduce((a, x) => a + x.pred, 0) + extras.reduce((a, x) => a + (x.value == null ? 0 : clamp(+x.value, 0, x.full)), 0);
-  return { subjects, extras, total, coverage: allPts ? testedPts / allPts : 0, extrasMissing };
+  return { subjects, extras, total, coverage: allPts ? testedPts / allPts : 0, unfilled };
 }
 function priorities(results, misses) {
   const out = [];
@@ -520,30 +523,33 @@ function treeHTML(st, pr) {
       return { m, r, pts, lost: m.pts - pts, hits, missed, quiet: all.filter((k) => !hits[k]) };
     });
     const man = x.man.map((mm) => ({ ...mm, lost: mm.value == null ? null : mm.pts - clamp(+mm.value || 0, 0, mm.pts) }));
-    const lost = mods.reduce((a, d) => a + d.lost, 0) + man.reduce((a, d) => a + (d.lost || 0), 0);
-    return { ...x, mods, man, lost, anyTested: mods.some((d) => d.r) };
+    // lost 只算已测、已填部分的失分；没测、没填的分值单独记为 open，图上用斜纹表示。
+    const lost = mods.reduce((a, d) => a + (d.r ? d.lost : 0), 0) + man.reduce((a, d) => a + (d.lost || 0), 0);
+    const open = mods.reduce((a, d) => a + (d.r ? 0 : d.m.pts), 0) + man.reduce((a, d) => a + (d.lost == null ? d.pts : 0), 0);
+    return { ...x, mods, man, lost, open, anyTested: mods.some((d) => d.r) };
   });
   const open = new Set(subjects.filter((x) => x.anyTested).sort((a, b) => b.lost - a.lost).slice(0, 2).map((x) => x.s.id));
   const lvClass = (r) => (r == null ? "lv-n" : r.level >= 3 ? "lv-good" : r.level === 2 ? "lv-mid" : "lv-bad");
-  const bar = (lost, full, est) => `<span class="lostbar${est ? " est" : ""}" aria-hidden="true"><b style="width:${Math.round(clamp(lost / full, 0, 1) * 100)}%"></b></span>`;
+  const pct = (x, full) => Math.round(clamp(x / full, 0, 1) * 100);
+  const bar = (lost, full, open = 0) => `<span class="lostbar" aria-hidden="true"><b style="width:${pct(lost, full)}%"></b>${open ? `<i style="width:${pct(open, full)}%"></i>` : ""}</span>`;
   const kpChip = (k, h) => `<span class="kp ${h.recent ? "hot" : "old"}">${esc(k)}${h.recent + h.old > 1 ? ` ×${h.recent + h.old}` : ""}</span>`;
   return `<article class="sheet stack"><header><h2>知识树</h2><span class="muted small">科目 → 模块 → 知识点，看清失分在哪里</span></header>
     <div class="tree-legend"><span><i class="sw lv-bad"></i>基础及以下</span><span><i class="sw lv-mid"></i>中档</span><span><i class="sw lv-good"></i>较难、压轴</span><span><i class="sw lv-n"></i>未测</span>
-      <span><i class="sw kp-hot"></i>最近做错的知识点</span><span><i class="sw kp-old"></i>以前错过</span><span class="muted">红条越长，失分越多；斜纹为未测的估算</span></div>
+      <span><i class="sw kp-hot"></i>最近做错的知识点</span><span><i class="sw kp-old"></i>以前错过</span><span class="muted">红条越长，失分越多；灰色斜纹为还没测、没填的分值（按 0 分计）</span></div>
     ${subjects.map((x) => `<details class="ktree" style="--subj:var(${x.s.color})" ${open.has(x.s.id) ? "open" : ""}>
-      <summary><span class="kname">${esc(x.s.name)}</span>${bar(x.lost, x.s.full, !x.anyTested)}<span class="num small">预估 ${Math.round(x.pred)} / ${x.s.full} · 失 ${Math.round(x.lost)}</span></summary>
+      <summary><span class="kname">${esc(x.s.name)}</span>${bar(x.lost, x.s.full, x.open)}<span class="num small">预估 ${Math.round(x.pred)} / ${x.s.full} · 失 ${Math.round(x.lost)}${x.open ? ` · 未测 ${Math.round(x.open)}` : ""}</span></summary>
       <ul class="tree">${x.mods.map((d) => `<li><div class="tnode ${lvClass(d.r)}">
           <div class="tn-name"><strong>${esc(d.m.name)}</strong> ${levelPill(d.r ? d.r.level : null)}</div>
-          <span class="num small">${d.r ? `失 ${round1(d.lost)}` : `约失 ${round1(d.lost)}`} / ${d.m.pts}</span>
-          ${bar(d.lost, d.m.pts, !d.r)}
-          <div class="muted small">${d.r ? `${d.r.right}/${d.r.n} 题 · ${fmtDate(d.r.at)}` : "未测，按中档估算"}</div>
+          <span class="num small">${d.r ? `失 ${round1(d.lost)}` : "未测"} / ${d.m.pts}</span>
+          ${d.r ? bar(d.lost, d.m.pts) : bar(0, d.m.pts, d.m.pts)}
+          <div class="muted small">${d.r ? `${d.r.right}/${d.r.n} 题 · ${fmtDate(d.r.at)}` : "未测，暂按 0 分计"}</div>
         </div>
         ${d.missed.length || d.quiet.length ? `<div class="kpleaves">${d.missed.map((k) => kpChip(k, d.hits[k])).join("")}
           ${d.quiet.length ? `<details class="kp-more"><summary>${d.missed.length ? "其他" : "全部"} ${d.quiet.length} 个知识点${d.r ? "（暂未发现问题）" : ""}</summary><div class="kpleaves inner">${d.quiet.map((k) => `<span class="kp quiet">${esc(k)}</span>`).join("")}</div></details>` : ""}</div>` : ""}
       </li>`).join("")}
       ${x.man.map((mm) => `<li><div class="tnode lv-man"><div class="tn-name"><strong>${esc(mm.name)}</strong> <span class="pill">手填</span></div>
-          <span class="num small">${mm.lost == null ? "未填" : `失 ${round1(mm.lost)}`} / ${mm.pts}</span>${mm.lost == null ? "" : bar(mm.lost, mm.pts)}
-          <div class="muted small">${mm.isDefault ? "用的是假设值，可在上面填写实际成绩" : "家长填写"}</div></div></li>`).join("")}</ul>
+          <span class="num small">${mm.lost == null ? "未填" : `失 ${round1(mm.lost)}`} / ${mm.pts}</span>${mm.lost == null ? bar(0, mm.pts, mm.pts) : bar(mm.lost, mm.pts)}
+          <div class="muted small">${mm.value == null ? "未填，暂按 0 分计，可在上面填写" : "家长填写"}</div></div></li>`).join("")}</ul>
     </details>`).join("")}
   </article>`;
 }
@@ -561,18 +567,18 @@ function reportHTML(st, { parent }) {
     <div class="grid2">
       <article class="sheet stack"><p class="eyebrow">预估总分（满分 ${ZK.exam.total}）</p>
         <div class="row" style="align-items:baseline"><span class="score-big num">${Math.round(pr.total)}</span><span class="muted">已测 ${tested} 个模块，覆盖 ${Math.round(pr.coverage * 100)}% 的笔试分值</span></div>
-        ${pr.coverage < 0.6 ? `<p class="notice warn">还有不少模块没测，没测的模块暂按“中档”估算，分数仅供参考。</p>` : ""}
-        ${pr.extrasMissing ? `<p class="notice warn">请在下面填写地理+生物的实际成绩，总分才完整。</p>` : ""}
+        ${pr.coverage < 1 ? `<p class="notice warn">没测的模块按 0 分计，测得越多，总分越接近真实水平。</p>` : ""}
+        ${pr.unfilled.length ? `<p class="notice warn">${esc(pr.unfilled.join("、"))}还没填，暂按 0 分计，请在下面填写实际成绩。</p>` : ""}
         <div class="ladder">${reach.map((t) => `<div class="rung ${t.gap >= 0 ? "reach" : ""}"><span>${esc(t.name)} <span class="muted small">${t.score} 分 · ${esc(t.note)}</span></span><span class="gap">${t.gap >= 0 ? `超出 ${t.gap}` : `差 ${-t.gap}`}</span></div>`).join("")}</div>
-        <p class="muted small">估分方法：每个模块按达到的层级估计得分率（基础 55%、中档 75%、较难 90%、压轴 98%，未达基础 30%），再按中考分值加权。这是粗略估计，用来比较强弱和定目标，不等于考试分数。</p>
+        <p class="muted small">估分方法：每个模块按达到的层级估计得分率（基础 55%、中档 75%、较难 90%、压轴 98%，未达基础 30%），再按中考分值加权；没测的模块和没填的部分按 0 分计。这是粗略估计，用来比较强弱和定目标，不等于考试分数。</p>
       </article>
       <article class="sheet stack"><h2>网站测不了的部分</h2>
-        <p class="muted small">按实际情况填写；留空则用括号里的假设值。</p>
+        <p class="muted small">按实际情况填写；留空按 0 分计。</p>
         <div class="form-grid">${[...pr.subjects.flatMap((x) => x.man), ...pr.extras].map((x) => {
           const full = x.pts || x.full;
           return `<div class="field"><label for="man-${x.id}">${esc(x.name)}（满分 ${full}）</label>
             <input id="man-${x.id}" type="number" inputmode="decimal" min="0" max="${full}" step="0.5" data-change="manual" data-key="${x.id}" data-sid="${esc(st.sid)}"
-              value="${manual[x.id] == null ? "" : esc(manual[x.id])}" placeholder="${DEFAULT_MANUAL[x.id] == null ? "请填写" : "假设 " + DEFAULT_MANUAL[x.id]}"></div>`;
+              value="${manual[x.id] == null ? "" : esc(manual[x.id])}" placeholder="未填（按 0 分）"></div>`;
         }).join("")}</div>
         ${!parent ? `<p class="muted small">这些数字只保存在本机。</p>` : ""}
       </article>
@@ -711,12 +717,12 @@ document.addEventListener("click", (e) => {
     case "import": {
       const txt = ($("#paste") || {}).value || "";
       const res = Code.parseAll(txt);
-      let added = 0, dup = 0;
-      for (const p of res.ok) { let r = null; try { r = mergeRecord(p); } catch (e) {} if (r) added++; else if (r === false) dup++; else res.bad++; }
+      let added = 0, dup = 0, old = 0;
+      for (const p of res.ok) { if ((+p.t || 0) < RESET) { old++; continue; } let r = null; try { r = mergeRecord(p); } catch (e) {} if (r) added++; else if (r === false) dup++; else res.bad++; }
       const lastSid = res.ok.length && res.ok[res.ok.length - 1].s;
       if (lastSid && Object.prototype.hasOwnProperty.call(P.students, lastSid)) P.current = lastSid;
       if (res.ok.length) saveParent();
-      VIEW.parentMsg = !res.ok.length && !res.bad ? "没有找到成绩码（以 ZK1- 开头）。" : `导入 ${added} 条${dup ? `，${dup} 条已导入过` : ""}${res.bad ? `，${res.bad} 条不完整（可能复制时漏了字）` : ""}。`;
+      VIEW.parentMsg = !res.ok.length && !res.bad ? "没有找到成绩码（以 ZK1- 开头）。" : `导入 ${added} 条${dup ? `，${dup} 条已导入过` : ""}${old ? `，${old} 条是清空前的旧成绩码，已跳过` : ""}${res.bad ? `，${res.bad} 条不完整（可能复制时漏了字）` : ""}。`;
       route(); break;
     }
     case "delete-ask": VIEW.confirmDelete = P.current; route(); break;
@@ -765,7 +771,9 @@ document.addEventListener("submit", async (e) => {
 async function cloudPull(pass, after, msg = $("#cloud-msg")) {
   if (msg) msg.textContent = "正在拉取成绩……";
   try {
-    const { rows, last, partial } = await Cloud.pull(pass, after);
+    // 云端对象按服务器时间命名（r/<13 位毫秒>-…），从 resetAt 开始拉，旧记录不再下载。
+    const floor = RESET ? "r/" + String(RESET).padStart(13, "0") : "";
+    const { rows, last, partial } = await Cloud.pull(pass, after > floor ? after : floor);
     let added = 0;
     for (const p of rows) { try { if (mergeRecord(p)) added++; } catch (e) {} } // 一条坏记录不能卡住后面的拉取
     if (added && !P.students[P.current]) P.current = Object.keys(P.students)[0] || "";
@@ -778,10 +786,23 @@ async function cloudPull(pass, after, msg = $("#cloud-msg")) {
   }
 }
 
+// 清空 resetAt 之前的记录：学生保留名字和编号（家长那边还是同一个人），成绩、错题、待上传的旧成绩全部清掉；
+// 家长清掉导入的成绩和手填分数，保留记住的家长密码。每台设备只做一次。
+function resetIfNeeded() {
+  const RKEY = "zk.reset.v1";
+  if (!RESET || (+readJSON(RKEY) || 0) >= RESET) return;
+  if (L) { L.results = {}; L.history = []; L.misses = []; saveStudent(); }
+  P = { students: {}, manual: {}, current: "", ...(P.cloudPass ? { cloudPass: P.cloudPass } : {}) };
+  saveParent();
+  Cloud.clearQueue();
+  writeJSON(RKEY, RESET);
+}
+
 // ---------------------------------------------------------------- 启动
 (async () => {
   await loadBanks();
   L = ensureStudent(readJSON(SKEY));
+  resetIfNeeded();
   TTS.init();
   if (location.hash === "#test") location.hash = "home";
   route();
