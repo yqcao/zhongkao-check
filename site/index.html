@@ -57,6 +57,8 @@ p { margin: 0; } button, input, select, textarea { font: inherit; color: inherit
   padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 8px; }
 .brand { font-family: var(--font-display); font-weight: 700; font-size: 20px; text-decoration: none; color: var(--ink); flex: 1 1 auto; min-width: 0; display: flex; gap: 10px; align-items: baseline; white-space: nowrap; }
 @media (max-width: 520px) { .brand small { display: none; } .nav { width: 100%; justify-content: space-between; } .nav a { padding: 6px 10px; } }
+.who { display: flex; align-items: center; gap: 6px; font-size: 14px; } .who:empty { display: none; }
+.who-name { font-weight: 700; max-width: 8em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .brand small { font-family: var(--font-body); font-weight: 400; font-size: 13px; color: var(--muted); }
 .nav { display: flex; gap: 4px; flex-wrap: wrap; }
 .nav a { text-decoration: none; color: var(--muted); font-size: 15px; padding: 6px 12px; border-radius: 6px; }

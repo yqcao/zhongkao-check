@@ -64,8 +64,10 @@ const modReady = (id) => (C.mod[id].kind === "passage" ? (C.passages[id] || []).
 const modMinutes = (id) => (C.mod[id].kind === "passage" ? (C.mod[id].listen ? 10 : 14) : 9);
 
 // ---------------------------------------------------------------- 学生数据（本机）
-const SKEY = "zk.student.v1";
-let L = null;
+// 一台设备可以有多个学生：S.all 按学生编号存每个人的记录，S.cur 是当前登录的人（空 = 未登录）。
+// 旧版只存一个学生（zk.student.v1），第一次打开时迁移过来。
+const SKEY = "zk.student.v1", MKEY = "zk.students.v1";
+let S = { cur: "", all: dict() }, L = null;
 function freshStudent(name) { return { v: 1, sid: randomId(10), name, createdAt: Date.now(), results: {}, history: [], misses: [], seen: {}, settings: { rate: 0.9, voice: "" } }; }
 function ensureStudent(l) {
   if (!l || typeof l !== "object" || !l.sid) return null;
@@ -77,7 +79,26 @@ function ensureStudent(l) {
   l.settings = Object.assign({ rate: 0.9, voice: "" }, l.settings || {});
   return l;
 }
-const saveStudent = () => writeJSON(SKEY, L);
+function loadStudents() {
+  const m = readJSON(MKEY);
+  S = { cur: "", all: dict() };
+  if (m && m.all && typeof m.all === "object") {
+    for (const [k, v] of Object.entries(m.all)) { const l = ensureStudent(v); if (l && l.sid === k) S.all[k] = l; }
+    if (typeof m.cur === "string" && S.all[m.cur]) S.cur = m.cur;
+  } else {
+    const old = ensureStudent(readJSON(SKEY));
+    if (old) { S.all[old.sid] = old; S.cur = old.sid; }
+  }
+  L = S.cur ? S.all[S.cur] : null;
+  if (!m && writeJSON(MKEY, S)) try { localStorage.removeItem(SKEY); } catch (e) {}
+}
+const saveStudent = () => { if (L) S.all[L.sid] = L; S.cur = L ? L.sid : ""; return writeJSON(MKEY, S); };
+const localStudents = () => Object.values(S.all).sort((a, b) => (b.lastAt || b.createdAt || 0) - (a.lastAt || a.createdAt || 0));
+// 登录：同名的学生直接切换过去（继续之前的记录），否则新建一个。
+function login(name) {
+  L = localStudents().find((x) => x.name === name) || freshStudent(name);
+  L.lastAt = Date.now(); saveStudent(); TTS.pick();
+}
 
 // ---------------------------------------------------------------- 家长数据（本机）
 const PKEY = "zk.parent.v1";
@@ -385,11 +406,13 @@ function itemReviewHTML(miss, opts = {}) {
 function renderLogin() {
   $("#view").innerHTML = `<section class="hello"><p class="eyebrow">赤峰中考 · 2027</p><h1>中考诊断台</h1>
     <p class="lede">按中考的模块逐一诊断：每个模块从中档题开始，答得好就升一级，答错就降一级，几分钟内定位到“基础 / 中档 / 较难 / 压轴”中的一级。做完把成绩码发给家长，家长就能看到估分和该补哪里。</p></section>
+    ${localStudents().length ? `<div class="sheet stack" style="max-width:520px;margin-bottom:18px"><h2>选择学生</h2>
+      <div class="row">${localStudents().map((x) => `<button class="btn big" data-action="switch" data-sid="${esc(x.sid)}">${esc(x.name)}<span class="muted small" style="margin-left:6px">已测 ${Object.keys(x.results).length}</span></button>`).join("")}</div></div>` : ""}
     <form class="sheet stack" id="login" style="max-width:520px">
-      <h2>先写上名字</h2>
+      <h2>${localStudents().length ? "或者写上新名字" : "先写上名字"}</h2>
       <div class="field"><label for="login-name">姓名（只保存在这台设备上）</label><input id="login-name" maxlength="20" autocomplete="off" required></div>
       <div class="row"><button class="btn primary big" type="submit">开始</button></div>
-      <p class="muted small">已经在别的设备上做过？没关系，家长页会把同一个名字的成绩合在一起看。</p>
+      <p class="muted small">写已有的名字会接着之前的记录做。已经在别的设备上做过？没关系，家长页会把同一个名字的成绩合在一起看。</p>
     </form>`;
 }
 function renderHome() {
@@ -612,7 +635,7 @@ function reportHTML(st, { parent }) {
   </div>`;
 }
 const VIEW = { missSubject: "all", parentMsg: "", confirmDelete: "" };
-function studentAsReport() { return { sid: L.sid, name: L.name, results: L.results, history: L.history, misses: L.misses }; }
+function studentAsReport(l = L) { return { sid: l.sid, name: l.name, results: l.results, history: l.history, misses: l.misses }; }
 function renderMe() {
   if (!L) return renderLogin();
   if (!Object.keys(L.results).length) { $("#view").innerHTML = `<section class="hello"><h1>我的结果</h1><p class="lede">还没有做过诊断。回到首页选一个模块开始吧。</p></section><a class="btn primary" href="#home">去首页</a>`; return; }
@@ -622,10 +645,12 @@ function renderMe() {
     ${reportHTML(studentAsReport(), { parent: false })}`;
 }
 function renderParent() {
-  const ids = Object.keys(P.students);
-  if (L && !P.students[L.sid]) ids.unshift("local");
-  if (!P.current || (P.current !== "local" && !P.students[P.current])) P.current = ids[0] || "";
-  const st = P.current === "local" ? (L ? studentAsReport() : null) : P.students[P.current];
+  // 本机做过题、还没导入家长数据的学生也列出来（编号前加 local:）。
+  const ids = [...localStudents().filter((x) => !P.students[x.sid] && Object.keys(x.results).length).map((x) => "local:" + x.sid), ...Object.keys(P.students)];
+  const isLocal = (id) => id.startsWith("local:");
+  const localOf = (id) => S.all[id.slice(6)];
+  if (!ids.includes(P.current)) P.current = ids[0] || "";
+  const st = !P.current ? null : isLocal(P.current) ? studentAsReport(localOf(P.current)) : P.students[P.current];
   $("#view").innerHTML = `<section class="hello"><p class="eyebrow">家长</p><h1>诊断报告</h1>
     <p class="lede">把孩子发来的成绩码粘贴到下面（一次可以粘贴多条，夹着别的文字也没关系）。数据保存在这台设备的浏览器里。</p></section>
     <div class="grid2" style="margin-bottom:18px">
@@ -638,8 +663,8 @@ function renderParent() {
           ? `<div class="row"><button class="btn primary" data-action="cloud-pull">拉取最新成绩</button><button class="btn quiet small" data-action="cloud-full">全部重新拉取</button><button class="btn quiet small" data-action="cloud-forget">忘记密码</button></div><span class="muted small" id="cloud-msg" role="status">${esc(VIEW.cloudMsg || "")}</span>`
           : `<form id="cloud-login" class="stack" style="gap:10px"><input type="text" autocomplete="username" value="家长" hidden aria-hidden="true"><div class="field"><label for="cl-pass">家长密码</label><input id="cl-pass" type="password" autocomplete="current-password"></div>
           <div class="row"><button class="btn" type="submit">拉取成绩</button><span class="muted small" id="cloud-msg" role="status"></span></div></form>`) : ""}
-        ${ids.length ? `<div class="field"><label for="pick-student">查看</label><select id="pick-student" data-change="pick">${ids.map((id) => `<option value="${esc(id)}" ${P.current === id ? "selected" : ""}>${id === "local" ? `本机：${esc(L.name)}` : esc(P.students[id].name)}${id !== "local" && P.students[id].updatedAt ? `（更新于 ${fmtDate(P.students[id].updatedAt)}）` : ""}</option>`).join("")}</select></div>` : `<p class="muted">还没有导入任何成绩。</p>`}
-        ${st && P.current !== "local" ? (VIEW.confirmDelete === P.current ? `<div class="notice stack" style="gap:8px"><span>删除 ${esc(st.name)} 在这台设备上的全部记录？此操作无法撤销。</span><div class="row"><button class="btn small" data-action="delete-yes">删除</button><button class="btn small primary" data-action="delete-no">保留</button></div></div>` : `<div><button class="btn quiet small" data-action="delete-ask">删除这个学生的记录…</button></div>`) : ""}
+        ${ids.length ? `<div class="field"><label for="pick-student">查看</label><select id="pick-student" data-change="pick">${ids.map((id) => `<option value="${esc(id)}" ${P.current === id ? "selected" : ""}>${isLocal(id) ? `本机：${esc(localOf(id).name)}` : esc(P.students[id].name)}${!isLocal(id) && P.students[id].updatedAt ? `（更新于 ${fmtDate(P.students[id].updatedAt)}）` : ""}</option>`).join("")}</select></div>` : `<p class="muted">还没有导入任何成绩。</p>`}
+        ${st && !isLocal(P.current) ? (VIEW.confirmDelete === P.current ? `<div class="notice stack" style="gap:8px"><span>删除 ${esc(st.name)} 在这台设备上的全部记录？此操作无法撤销。</span><div class="row"><button class="btn small" data-action="delete-yes">删除</button><button class="btn small primary" data-action="delete-no">保留</button></div></div>` : `<div><button class="btn quiet small" data-action="delete-ask">删除这个学生的记录…</button></div>`) : ""}
       </article>
     </div>
     ${st ? reportHTML(st, { parent: true }) : `<div class="empty">导入成绩码后，这里会显示估分、该先补的模块、薄弱知识点和全部错题解析。</div>`}`;
@@ -660,10 +685,15 @@ function renderSettings() {
 }
 
 // ---------------------------------------------------------------- 外壳与路由
-app.innerHTML = `<header class="top"><div class="top-in"><a class="brand" href="#home">中考诊断台 <small>赤峰 · 2027</small></a>
+app.innerHTML = `<header class="top"><div class="top-in"><a class="brand" href="#home">中考诊断台 <small>赤峰 · 2027</small></a><div class="who" id="who"></div>
   <nav class="nav" aria-label="主导航"><a href="#home" data-tab="home">诊断</a><a href="#me" data-tab="me">我的结果</a><a href="#parent" data-tab="parent">家长</a><a href="#settings" data-tab="settings">设置</a></nav></div></header>
   <main class="wrap" id="view"><p class="muted">正在加载题库……</p></main>`;
+function updateWho() {
+  const w = $("#who");
+  if (w) w.innerHTML = L ? `<span class="who-name">${esc(L.name)}</span><button class="btn small" data-action="logout">退出 / 换人</button>` : "";
+}
 function route() {
+  updateWho();
   if (RUN) return render();
   const tab = (location.hash || "#home").slice(1) || "home";
   document.querySelectorAll(".nav a").forEach((a) => { if (a.dataset.tab === tab) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current"); });
@@ -734,7 +764,11 @@ document.addEventListener("click", (e) => {
     case "test-voice": TTS.speak("Hello! This is how the listening section will sound. Good luck with your exam."); break;
     case "reset-ask": VIEW.confirmReset = true; route(); break;
     case "reset-no": VIEW.confirmReset = false; route(); break;
-    case "reset-yes": { const name = L.name; L = freshStudent(name); saveStudent(); VIEW.confirmReset = false; location.hash = "home"; route(); break; }
+    case "logout":
+      if (RUN) { RUN.confirmExit = true; render(); break; } // 先退出正在做的模块
+      L = null; saveStudent(); VIEW.confirmReset = false; TTS.pick(); location.hash = "home"; route(); break;
+    case "switch": if (S.all[a.dataset.sid]) { L = S.all[a.dataset.sid]; L.lastAt = Date.now(); saveStudent(); TTS.pick(); location.hash = "home"; route(); } break;
+    case "reset-yes": { const name = L.name; delete S.all[L.sid]; L = freshStudent(name); saveStudent(); VIEW.confirmReset = false; location.hash = "home"; route(); break; }
   }
 });
 document.addEventListener("change", (e) => {
@@ -758,7 +792,7 @@ document.addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = ($("#login-name").value || "").trim().slice(0, 20);
     if (!name) return;
-    L = freshStudent(name); saveStudent(); TTS.pick(); route();
+    login(name); route();
   } else if (e.target.id === "cloud-login") {
     e.preventDefault();
     const msg = $("#cloud-msg");
@@ -791,7 +825,8 @@ async function cloudPull(pass, after, msg = $("#cloud-msg")) {
 function resetIfNeeded() {
   const RKEY = "zk.reset.v1";
   if (!RESET || (+readJSON(RKEY) || 0) >= RESET) return;
-  if (L) { L.results = {}; L.history = []; L.misses = []; saveStudent(); }
+  for (const l of Object.values(S.all)) { l.results = {}; l.history = []; l.misses = []; }
+  saveStudent();
   P = { students: {}, manual: {}, current: "", ...(P.cloudPass ? { cloudPass: P.cloudPass } : {}) };
   saveParent();
   Cloud.clearQueue();
@@ -801,7 +836,7 @@ function resetIfNeeded() {
 // ---------------------------------------------------------------- 启动
 (async () => {
   await loadBanks();
-  L = ensureStudent(readJSON(SKEY));
+  loadStudents();
   resetIfNeeded();
   TTS.init();
   if (location.hash === "#test") location.hash = "home";
